@@ -1,6 +1,6 @@
 """
-Process Flow Diagram Generator - IMPROVED VERSION
-Automated swimlane process flow diagrams with proper sequential ordering
+Process Flow Diagram Generator - VERSION 2
+Uses stronger constraints to enforce sequential step ordering
 """
 
 import streamlit as st
@@ -50,11 +50,11 @@ def get_step_attributes(step_type: str) -> Dict[str, str]:
     return STEP_CONFIGS.get(step_type_lower, STEP_CONFIGS['process'])
 
 def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation: str = 'LR') -> graphviz.Digraph:
-    """Build Graphviz flowchart with swimlanes and proper sequential ordering."""
+    """Build Graphviz flowchart with swimlanes and enforced sequential ordering."""
     
-    # Create main graph with specified layout
-    dot = graphviz.Digraph(comment=process_name)
-    dot.attr(rankdir=orientation, splines='ortho', nodesep='0.8', ranksep='1.2')
+    # Create main graph with DOT engine and newrank for better control
+    dot = graphviz.Digraph(comment=process_name, engine='dot')
+    dot.attr(rankdir=orientation, splines='ortho', nodesep='1.2', ranksep='2.0', newrank='true')
     dot.attr('node', fontname='Arial', fontsize='11', margin='0.3')
     dot.attr('edge', fontname='Arial', fontsize='10', color='black', penwidth='1.5')
     
@@ -64,12 +64,14 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
     # Sort by StepOrder
     df_sorted = df_proc.sort_values('StepOrder').reset_index(drop=True)
     
-    # Group steps by lane for swimlanes
-    lanes = df_sorted['Lane'].unique()
-    lane_steps = {lane: df_sorted[df_sorted['Lane'] == lane] for lane in lanes}
+    # Get unique lanes and create a mapping
+    lanes = df_sorted['Lane'].unique().tolist()
+    lane_to_idx = {lane: idx for idx, lane in enumerate(lanes)}
     
     # Create swimlanes as subgraphs
     for idx, lane in enumerate(lanes):
+        lane_steps = df_sorted[df_sorted['Lane'] == lane]
+        
         with dot.subgraph(name=f'cluster_{idx}') as cluster:
             cluster.attr(
                 label=str(lane), 
@@ -82,53 +84,57 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
                 penwidth='2'
             )
             
-            # Add nodes for this lane
-            lane_df = lane_steps[lane]
-            for _, row in lane_df.iterrows():
+            # Add nodes for this lane with lane annotation
+            for _, row in lane_steps.iterrows():
                 step_id = str(row['StepID'])
                 step_label = str(row['StepLabel'])
                 step_type = str(row['StepType'])
+                step_order = int(row['StepOrder'])
                 
                 # Get attributes for this step type
                 attrs = get_step_attributes(step_type)
                 
+                # Add group attribute to help with ranking
+                attrs['group'] = str(step_order)
+                
                 # Add the node
                 cluster.node(step_id, step_label, **attrs)
     
-    # *** KEY FIX: Create rank groups to enforce step order ***
-    # Group steps by StepOrder to ensure they appear at the same level
-    step_orders = df_sorted['StepOrder'].unique()
+    # ***CRITICAL FIX: Create invisible backbone to enforce order***
+    # This creates a strong sequential chain that Graphviz must respect
     
-    for order in sorted(step_orders):
-        steps_at_order = df_sorted[df_sorted['StepOrder'] == order]['StepID'].tolist()
+    # Create invisible nodes for structure (one per step order)
+    step_orders = sorted(df_sorted['StepOrder'].unique())
+    
+    for i, order in enumerate(step_orders):
+        # Create an invisible structural node
+        inv_node = f'inv_{order}'
+        dot.node(inv_node, '', shape='point', width='0', height='0', style='invis')
         
-        if len(steps_at_order) > 1:
-            # Multiple steps at same order - force same rank
-            with dot.subgraph() as s:
-                s.attr(rank='same')
-                for step_id in steps_at_order:
-                    s.node(str(step_id))
-        elif len(steps_at_order) == 1:
-            # Single step - still create rank group for consistency
-            with dot.subgraph() as s:
-                s.attr(rank='same')
-                s.node(str(steps_at_order[0]))
-    
-    # Add invisible edges between consecutive steps to enforce order
-    # This helps Graphviz understand the intended flow direction
-    prev_step = None
-    for _, row in df_sorted.iterrows():
-        current_step = str(row['StepID'])
-        if prev_step is not None:
-            # Add invisible edge with weight to guide layout
-            dot.edge(prev_step, current_step, style='invis', weight='10')
-        prev_step = current_step
+        # Connect to previous invisible node with very high weight
+        if i > 0:
+            prev_inv_node = f'inv_{step_orders[i-1]}'
+            dot.edge(prev_inv_node, inv_node, style='invis', weight='100', minlen='2')
+        
+        # Force all steps at this order to be same rank as invisible node
+        steps_at_order = df_sorted[df_sorted['StepOrder'] == order]
+        
+        with dot.subgraph() as s:
+            s.attr(rank='same')
+            s.node(inv_node)
+            for _, row in steps_at_order.iterrows():
+                s.node(str(row['StepID']))
+        
+        # Connect each real step to the invisible node with invisible edge
+        for _, row in steps_at_order.iterrows():
+            step_id = str(row['StepID'])
+            # Connect with very high weight invisible edge
+            dot.edge(inv_node, step_id, style='invis', weight='50', len='0.5')
     
     # Add visible edges (connections between steps)
     for _, row in df_sorted.iterrows():
         step_id = str(row['StepID'])
         step_type = str(row['StepType']).lower().strip()
-        current_lane = str(row['Lane'])
         
         # Handle decision nodes with Yes/No branches
         if step_type == 'decision':
@@ -136,42 +142,18 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
             no_next = str(row['NoNext'])
             
             if pd.notna(row['YesNext']) and yes_next != 'nan' and yes_next != '':
-                # Check if cross-lane connection
-                target_row = df_sorted[df_sorted['StepID'] == yes_next]
-                if not target_row.empty:
-                    target_lane = str(target_row.iloc[0]['Lane'])
-                    if target_lane != current_lane:
-                        dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green', 
-                                style='dashed', penwidth='1.5', arrowhead='normal', constraint='false')
-                    else:
-                        dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green',
-                                penwidth='1.5', arrowhead='normal', constraint='false')
+                dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green', 
+                        penwidth='2', arrowhead='normal', constraint='false', weight='1')
             
             if pd.notna(row['NoNext']) and no_next != 'nan' and no_next != '':
-                # Check if cross-lane connection
-                target_row = df_sorted[df_sorted['StepID'] == no_next]
-                if not target_row.empty:
-                    target_lane = str(target_row.iloc[0]['Lane'])
-                    if target_lane != current_lane:
-                        dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
-                                style='dashed', penwidth='1.5', arrowhead='normal', constraint='false')
-                    else:
-                        dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
-                                penwidth='1.5', arrowhead='normal', constraint='false')
+                dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
+                        penwidth='2', arrowhead='normal', constraint='false', weight='1')
         else:
             # Normal flow using NextStep
             next_step = str(row['NextStep'])
             if pd.notna(row['NextStep']) and next_step != 'nan' and next_step != '':
-                # Check if cross-lane connection
-                target_row = df_sorted[df_sorted['StepID'] == next_step]
-                if not target_row.empty:
-                    target_lane = str(target_row.iloc[0]['Lane'])
-                    if target_lane != current_lane:
-                        dot.edge(step_id, next_step, style='dashed', penwidth='1.5', 
-                                arrowhead='normal', constraint='false')
-                    else:
-                        dot.edge(step_id, next_step, penwidth='1.5', arrowhead='normal', 
-                                constraint='false')
+                dot.edge(step_id, next_step, penwidth='2', arrowhead='normal', 
+                        constraint='false', weight='1')
     
     return dot
 
@@ -408,7 +390,7 @@ def main():
         
         #### Features:
         - ✅ Automatic swimlane generation based on Lane column
-        - ✅ **Sequential ordering based on StepOrder column**
+        - ✅ **Enforced sequential ordering based on StepOrder column**
         - ✅ Support for 9 different step types with custom shapes and colors
         - ✅ Decision branching with Yes/No paths
         - ✅ Horizontal or vertical flow layout
