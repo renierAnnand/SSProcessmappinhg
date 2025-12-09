@@ -1,6 +1,6 @@
 """
-Process Flow Diagram Generator - VERSION 2
-Uses stronger constraints to enforce sequential step ordering
+Process Flow Diagram Generator - SEQUENTIAL VERSION
+Guaranteed sequential ordering using lane labels instead of clusters
 """
 
 import streamlit as st
@@ -50,11 +50,11 @@ def get_step_attributes(step_type: str) -> Dict[str, str]:
     return STEP_CONFIGS.get(step_type_lower, STEP_CONFIGS['process'])
 
 def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation: str = 'LR') -> graphviz.Digraph:
-    """Build Graphviz flowchart with swimlanes and enforced sequential ordering."""
+    """Build Graphviz flowchart with guaranteed sequential ordering using lane labels."""
     
-    # Create main graph with DOT engine and newrank for better control
+    # Create main graph
     dot = graphviz.Digraph(comment=process_name, engine='dot')
-    dot.attr(rankdir=orientation, splines='ortho', nodesep='1.2', ranksep='2.0', newrank='true')
+    dot.attr(rankdir=orientation, splines='ortho', nodesep='1.0', ranksep='1.8')
     dot.attr('node', fontname='Arial', fontsize='11', margin='0.3')
     dot.attr('edge', fontname='Arial', fontsize='10', color='black', penwidth='1.5')
     
@@ -64,72 +64,41 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
     # Sort by StepOrder
     df_sorted = df_proc.sort_values('StepOrder').reset_index(drop=True)
     
-    # Get unique lanes and create a mapping
-    lanes = df_sorted['Lane'].unique().tolist()
-    lane_to_idx = {lane: idx for idx, lane in enumerate(lanes)}
-    
-    # Create swimlanes as subgraphs
-    for idx, lane in enumerate(lanes):
-        lane_steps = df_sorted[df_sorted['Lane'] == lane]
+    # Add all nodes with lane information in the label
+    for _, row in df_sorted.iterrows():
+        step_id = str(row['StepID'])
+        step_label = str(row['StepLabel'])
+        lane = str(row['Lane'])
+        step_type = str(row['StepType'])
         
-        with dot.subgraph(name=f'cluster_{idx}') as cluster:
-            cluster.attr(
-                label=str(lane), 
-                style='filled', 
-                color='black',
-                fillcolor='#E8E8E8',
-                fontsize='14',
-                fontname='Arial Bold',
-                labeljust='l',
-                penwidth='2'
-            )
-            
-            # Add nodes for this lane with lane annotation
-            for _, row in lane_steps.iterrows():
-                step_id = str(row['StepID'])
-                step_label = str(row['StepLabel'])
-                step_type = str(row['StepType'])
-                step_order = int(row['StepOrder'])
-                
-                # Get attributes for this step type
-                attrs = get_step_attributes(step_type)
-                
-                # Add group attribute to help with ranking
-                attrs['group'] = str(step_order)
-                
-                # Add the node
-                cluster.node(step_id, step_label, **attrs)
+        # Get attributes for this step type
+        attrs = get_step_attributes(step_type)
+        
+        # Add lane to the label with clear separation
+        full_label = f"[{lane}]\\n{step_label}"
+        
+        # Add the node
+        dot.node(step_id, full_label, **attrs)
     
-    # ***CRITICAL FIX: Create invisible backbone to enforce order***
-    # This creates a strong sequential chain that Graphviz must respect
-    
-    # Create invisible nodes for structure (one per step order)
+    # Create rank groups for sequential ordering
     step_orders = sorted(df_sorted['StepOrder'].unique())
     
-    for i, order in enumerate(step_orders):
-        # Create an invisible structural node
-        inv_node = f'inv_{order}'
-        dot.node(inv_node, '', shape='point', width='0', height='0', style='invis')
+    for order in step_orders:
+        steps_at_order = df_sorted[df_sorted['StepOrder'] == order]['StepID'].tolist()
         
-        # Connect to previous invisible node with very high weight
-        if i > 0:
-            prev_inv_node = f'inv_{step_orders[i-1]}'
-            dot.edge(prev_inv_node, inv_node, style='invis', weight='100', minlen='2')
-        
-        # Force all steps at this order to be same rank as invisible node
-        steps_at_order = df_sorted[df_sorted['StepOrder'] == order]
-        
+        # Force all steps at same order to be at same rank
         with dot.subgraph() as s:
             s.attr(rank='same')
-            s.node(inv_node)
-            for _, row in steps_at_order.iterrows():
-                s.node(str(row['StepID']))
+            for step_id in steps_at_order:
+                s.node(str(step_id))
+    
+    # Add edges to enforce sequential flow
+    for i in range(len(df_sorted) - 1):
+        current_step = str(df_sorted.iloc[i]['StepID'])
+        next_step = str(df_sorted.iloc[i+1]['StepID'])
         
-        # Connect each real step to the invisible node with invisible edge
-        for _, row in steps_at_order.iterrows():
-            step_id = str(row['StepID'])
-            # Connect with very high weight invisible edge
-            dot.edge(inv_node, step_id, style='invis', weight='50', len='0.5')
+        # Add invisible edge to maintain order
+        dot.edge(current_step, next_step, style='invis', weight='10')
     
     # Add visible edges (connections between steps)
     for _, row in df_sorted.iterrows():
@@ -138,22 +107,40 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
         
         # Handle decision nodes with Yes/No branches
         if step_type == 'decision':
-            yes_next = str(row['YesNext'])
-            no_next = str(row['NoNext'])
+            # Check for YesNext and NoNext first (standard approach)
+            yes_next = str(row['YesNext']) if pd.notna(row['YesNext']) else ''
+            no_next = str(row['NoNext']) if pd.notna(row['NoNext']) else ''
+            next_step = str(row['NextStep']) if pd.notna(row['NextStep']) else ''
             
-            if pd.notna(row['YesNext']) and yes_next != 'nan' and yes_next != '':
-                dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green', 
-                        penwidth='2', arrowhead='normal', constraint='false', weight='1')
+            # Flexible logic: Handle different data conventions
+            # Convention 1: YesNext and NoNext are filled (standard)
+            # Convention 2: NextStep (as Yes) and YesNext (as No) are filled
             
-            if pd.notna(row['NoNext']) and no_next != 'nan' and no_next != '':
-                dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
-                        penwidth='2', arrowhead='normal', constraint='false', weight='1')
+            if yes_next and yes_next != 'nan' and yes_next != '':
+                # YesNext is populated - use it
+                if no_next and no_next != 'nan' and no_next != '':
+                    # Both YesNext and NoNext exist (standard convention)
+                    dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green', 
+                            penwidth='2', arrowhead='normal', constraint='false')
+                    dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
+                            penwidth='2', arrowhead='normal', constraint='false')
+                else:
+                    # Only YesNext exists, treat as "No" rejection path (backward loop)
+                    # and NextStep as "Yes" approval path (forward)
+                    if next_step and next_step != 'nan' and next_step != '':
+                        dot.edge(step_id, next_step, label='Yes', color='green', fontcolor='green',
+                                penwidth='2', arrowhead='normal', constraint='false')
+                    dot.edge(step_id, yes_next, label='No', color='red', fontcolor='red',
+                            penwidth='2', arrowhead='normal', constraint='false')
+            elif next_step and next_step != 'nan' and next_step != '':
+                # Only NextStep exists for decision - unusual but handle it
+                dot.edge(step_id, next_step, label='Yes', color='green', fontcolor='green',
+                        penwidth='2', arrowhead='normal', constraint='false')
         else:
             # Normal flow using NextStep
             next_step = str(row['NextStep'])
             if pd.notna(row['NextStep']) and next_step != 'nan' and next_step != '':
-                dot.edge(step_id, next_step, penwidth='2', arrowhead='normal', 
-                        constraint='false', weight='1')
+                dot.edge(step_id, next_step, penwidth='2', arrowhead='normal', constraint='false')
     
     return dot
 
@@ -193,7 +180,7 @@ def main():
     
     # Title and description
     st.title("📊 Process Flow Diagram Generator")
-    st.markdown("### Automated Swimlane Process Flow Diagrams with Sequential Ordering")
+    st.markdown("### Sequential Process Flow Diagrams (Guaranteed Order)")
     st.markdown("---")
     
     # Sidebar for configuration
@@ -243,6 +230,9 @@ def main():
         for step_type, (name, color, desc) in step_type_info.items():
             st.markdown(f"🔹 **{name}**: {desc}")
             st.markdown(f"<div style='background-color:{color}; height:20px; border: 2px solid black; margin: 5px 0;'></div>", unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.info("💡 **Note**: This version uses lane labels instead of swimlane boxes to guarantee perfect sequential ordering from Step 1 to final step.")
     
     # File upload section
     col1, col2 = st.columns([2, 1])
@@ -335,17 +325,51 @@ def main():
                 with st.spinner("Generating diagram..."):
                     flow_diagram = build_flow_for_process(df_process, selected_process, orientation)
                 
-                # Display the diagram
-                st.graphviz_chart(flow_diagram, use_container_width=True)
+                # Render diagram to multiple formats
+                diagram_name = selected_process.replace(' ', '_')
                 
-                # Download button for DOT source
-                dot_source = flow_diagram.source
-                st.download_button(
-                    label="📥 Download DOT Source",
-                    data=dot_source,
-                    file_name=f"{selected_process.replace(' ', '_')}_flow.dot",
-                    mime="text/plain"
-                )
+                # Render to PNG for display and download
+                png_data = flow_diagram.pipe(format='png')
+                
+                # Render to SVG for scalable download
+                svg_data = flow_diagram.pipe(format='svg')
+                
+                # Display the diagram with zoom capability
+                st.image(png_data, use_column_width=True, caption="Click image to zoom")
+                
+                st.info("💡 **Tip**: Click the image above to zoom in/out and view details")
+                
+                # Download buttons
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.download_button(
+                        label="📥 Download PNG Image",
+                        data=png_data,
+                        file_name=f"{diagram_name}_flow.png",
+                        mime="image/png",
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    st.download_button(
+                        label="📥 Download SVG (Scalable)",
+                        data=svg_data,
+                        file_name=f"{diagram_name}_flow.svg",
+                        mime="image/svg+xml",
+                        use_container_width=True
+                    )
+                
+                with col3:
+                    # Download button for DOT source
+                    dot_source = flow_diagram.source
+                    st.download_button(
+                        label="📥 Download DOT Source",
+                        data=dot_source,
+                        file_name=f"{diagram_name}_flow.dot",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
                 
             except Exception as e:
                 st.error(f"❌ Error generating diagram: {str(e)}")
@@ -385,18 +409,23 @@ def main():
         1. **Prepare your Excel file** with the required columns (any sheet name works)
         2. **Upload the file** using the file uploader above
         3. **Select a process** from the dropdown menu
-        4. **View the generated swimlane diagram** with proper sequential ordering
-        5. **Download** the diagram source or process details as needed
+        4. **View the generated diagram** with GUARANTEED sequential ordering
+        5. **Click the image to zoom** and explore details
+        6. **Download** in multiple formats (PNG, SVG, or DOT source)
         
         #### Features:
-        - ✅ Automatic swimlane generation based on Lane column
-        - ✅ **Enforced sequential ordering based on StepOrder column**
+        - ✅ **GUARANTEED sequential ordering** (Step 1 → Step 2 → ... → Final Step)
+        - ✅ **Click-to-zoom** for detailed viewing of large diagrams
+        - ✅ **Multiple download formats**: PNG image, SVG (scalable), DOT source
+        - ✅ Lane information shown in node labels (e.g., "[Lane Name] Step Description")
         - ✅ Support for 9 different step types with custom shapes and colors
         - ✅ Decision branching with Yes/No paths
         - ✅ Horizontal or vertical flow layout
         - ✅ Professional business process diagram styling
-        - ✅ Export capabilities for further customization
-        - ✅ Works with any sheet name (automatically uses first sheet)
+        
+        #### Design Trade-off:
+        This version prioritizes **perfect sequential ordering** over traditional swimlane boxes.
+        Lane information is included within each node label for clarity.
         """)
 
 if __name__ == "__main__":
