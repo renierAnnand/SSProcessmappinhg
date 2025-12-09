@@ -149,7 +149,7 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         st.markdown("### Upload Excel File")
-        st.markdown("File must contain a sheet named **'Flows'** with these columns:")
+        st.markdown("Your Excel file should contain these columns:")
         st.code("""
 • ProcessName
 • ProcessID
@@ -176,7 +176,7 @@ def main():
         uploaded_file = st.file_uploader(
             "Upload your Process Flow Excel file",
             type=['xlsx'],
-            help="Excel file must contain a 'Flows' sheet with the required columns"
+            help="Excel file should contain the required columns (any sheet name works)"
         )
     
     with col2:
@@ -188,13 +188,23 @@ def main():
     
     if uploaded_file is not None:
         try:
-            # Read Excel file
-            df = pd.read_excel(uploaded_file, sheet_name='Flows')
-            st.success(f"✅ File loaded successfully! Found {len(df)} steps.")
+            # Try to read the first sheet automatically
+            xl_file = pd.ExcelFile(uploaded_file)
+            sheet_names = xl_file.sheet_names
+            
+            # Try to find 'Flows' sheet first, otherwise use first sheet
+            if 'Flows' in sheet_names:
+                sheet_to_read = 'Flows'
+            else:
+                sheet_to_read = sheet_names[0]
+                st.info(f"ℹ️ Using sheet: '{sheet_to_read}' (no 'Flows' sheet found)")
+            
+            df = pd.read_excel(uploaded_file, sheet_name=sheet_to_read)
+            st.success(f"✅ File loaded successfully! Found {len(df)} steps from sheet '{sheet_to_read}'")
             st.session_state['use_sample'] = False
         except Exception as e:
             st.error(f"❌ Error reading file: {str(e)}")
-            st.info("💡 Make sure your Excel file has a sheet named 'Flows'")
+            st.info("💡 Make sure your Excel file contains the required columns")
     
     elif st.session_state.get('use_sample', False):
         df = create_sample_data()
@@ -293,7 +303,7 @@ def main():
         
         st.markdown("### 📖 How to Use")
         st.markdown("""
-        1. **Prepare your Excel file** with a sheet named 'Flows' containing all required columns
+        1. **Prepare your Excel file** with the required columns (any sheet name works)
         2. **Upload the file** using the file uploader above
         3. **Select a process** from the dropdown menu
         4. **View the generated swimlane diagram** and process details
@@ -306,6 +316,7 @@ def main():
         - ✅ Horizontal left-to-right flow layout
         - ✅ Professional business process diagram styling
         - ✅ Export capabilities for further customization
+        - ✅ Works with any sheet name (automatically uses first sheet)
         """)
 
 if __name__ == "__main__":
