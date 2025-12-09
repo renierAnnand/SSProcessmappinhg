@@ -18,15 +18,15 @@ st.set_page_config(
 
 # Step type configurations matching flowchart standards
 STEP_CONFIGS = {
-    'process': {'shape': 'box', 'style': 'filled', 'fillcolor': 'lightgreen', 'color': 'black'},
-    'decision': {'shape': 'diamond', 'style': 'filled', 'fillcolor': 'gold', 'color': 'black'},
-    'manual': {'shape': 'box', 'style': 'filled', 'fillcolor': 'plum', 'color': 'black'},
-    'predefined': {'shape': 'box3d', 'style': 'filled', 'fillcolor': 'lightblue', 'color': 'black'},
-    'pause': {'shape': 'hexagon', 'style': 'filled', 'fillcolor': 'orange', 'color': 'black'},
-    'input': {'shape': 'parallelogram', 'style': 'filled', 'fillcolor': 'lightblue', 'color': 'black'},
-    'output': {'shape': 'parallelogram', 'style': 'filled', 'fillcolor': 'lightblue', 'color': 'black'},
-    'form': {'shape': 'note', 'style': 'filled', 'fillcolor': 'lightgrey', 'color': 'black'},
-    'end': {'shape': 'oval', 'style': 'filled', 'fillcolor': 'red', 'color': 'black', 'fontcolor': 'white'}
+    'process': {'shape': 'box', 'style': 'filled', 'fillcolor': '#90EE90', 'color': 'black', 'penwidth': '2'},
+    'decision': {'shape': 'diamond', 'style': 'filled', 'fillcolor': '#FFD700', 'color': 'black', 'penwidth': '2'},
+    'manual': {'shape': 'box', 'style': 'filled', 'fillcolor': '#BA8FD8', 'color': 'black', 'penwidth': '2'},
+    'predefined': {'shape': 'box3d', 'style': 'filled', 'fillcolor': '#4682B4', 'color': 'black', 'fontcolor': 'white', 'penwidth': '2'},
+    'pause': {'shape': 'hexagon', 'style': 'filled,dashed', 'fillcolor': '#FF8C00', 'color': 'black', 'penwidth': '2'},
+    'input': {'shape': 'invtrapezium', 'style': 'filled', 'fillcolor': '#87CEEB', 'color': 'black', 'penwidth': '2'},
+    'output': {'shape': 'trapezium', 'style': 'filled', 'fillcolor': '#87CEEB', 'color': 'black', 'penwidth': '2'},
+    'form': {'shape': 'note', 'style': 'filled,dashed', 'fillcolor': '#D3D3D3', 'color': 'black', 'penwidth': '2'},
+    'end': {'shape': 'oval', 'style': 'filled', 'fillcolor': '#FF0000', 'color': 'black', 'fontcolor': 'white', 'penwidth': '2'}
 }
 
 def validate_columns(df: pd.DataFrame) -> Tuple[bool, str]:
@@ -49,13 +49,16 @@ def get_step_attributes(step_type: str) -> Dict[str, str]:
     step_type_lower = step_type.lower().strip()
     return STEP_CONFIGS.get(step_type_lower, STEP_CONFIGS['process'])
 
-def build_flow_for_process(df_proc: pd.DataFrame, process_name: str) -> graphviz.Digraph:
+def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation: str = 'LR') -> graphviz.Digraph:
     """Build Graphviz flowchart with swimlanes for a given process."""
-    # Create main graph with horizontal layout
+    # Create main graph with specified layout
     dot = graphviz.Digraph(comment=process_name)
-    dot.attr(rankdir='LR', splines='ortho', nodesep='0.8', ranksep='1.2')
-    dot.attr('node', fontname='Arial', fontsize='10')
-    dot.attr('edge', fontname='Arial', fontsize='9')
+    dot.attr(rankdir=orientation, splines='polyline', nodesep='1.0', ranksep='1.5')
+    dot.attr('node', fontname='Arial', fontsize='11', margin='0.3')
+    dot.attr('edge', fontname='Arial', fontsize='10', color='black', penwidth='1.5')
+    
+    # Add process title header
+    dot.attr(label=process_name, labelloc='t', labeljust='l', fontsize='16', fontname='Arial Bold')
     
     # Sort by StepOrder
     df_sorted = df_proc.sort_values('StepOrder').reset_index(drop=True)
@@ -67,8 +70,16 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str) -> graphviz
     # Create swimlanes as subgraphs
     for idx, lane in enumerate(lanes):
         with dot.subgraph(name=f'cluster_{idx}') as cluster:
-            cluster.attr(label=str(lane), style='filled', color='lightgrey', fillcolor='#f0f0f0')
-            cluster.attr(fontsize='12', fontname='Arial Bold')
+            cluster.attr(
+                label=str(lane), 
+                style='filled', 
+                color='black',
+                fillcolor='#E8E8E8',
+                fontsize='14',
+                fontname='Arial Bold',
+                labeljust='l',
+                penwidth='2'
+            )
             
             # Add nodes for this lane
             lane_df = lane_steps[lane]
@@ -87,6 +98,7 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str) -> graphviz
     for _, row in df_sorted.iterrows():
         step_id = str(row['StepID'])
         step_type = str(row['StepType']).lower().strip()
+        current_lane = str(row['Lane'])
         
         # Handle decision nodes with Yes/No branches
         if step_type == 'decision':
@@ -94,15 +106,40 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str) -> graphviz
             no_next = str(row['NoNext'])
             
             if pd.notna(row['YesNext']) and yes_next != 'nan' and yes_next != '':
-                dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green')
+                # Check if cross-lane connection
+                target_row = df_sorted[df_sorted['StepID'] == yes_next]
+                if not target_row.empty:
+                    target_lane = str(target_row.iloc[0]['Lane'])
+                    if target_lane != current_lane:
+                        dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green', 
+                                style='dashed', penwidth='1.5', arrowhead='normal')
+                    else:
+                        dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green',
+                                penwidth='1.5', arrowhead='normal')
             
             if pd.notna(row['NoNext']) and no_next != 'nan' and no_next != '':
-                dot.edge(step_id, no_next, label='No', color='red', fontcolor='red')
+                # Check if cross-lane connection
+                target_row = df_sorted[df_sorted['StepID'] == no_next]
+                if not target_row.empty:
+                    target_lane = str(target_row.iloc[0]['Lane'])
+                    if target_lane != current_lane:
+                        dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
+                                style='dashed', penwidth='1.5', arrowhead='normal')
+                    else:
+                        dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
+                                penwidth='1.5', arrowhead='normal')
         else:
             # Normal flow using NextStep
             next_step = str(row['NextStep'])
             if pd.notna(row['NextStep']) and next_step != 'nan' and next_step != '':
-                dot.edge(step_id, next_step)
+                # Check if cross-lane connection
+                target_row = df_sorted[df_sorted['StepID'] == next_step]
+                if not target_row.empty:
+                    target_lane = str(target_row.iloc[0]['Lane'])
+                    if target_lane != current_lane:
+                        dot.edge(step_id, next_step, style='dashed', penwidth='1.5', arrowhead='normal')
+                    else:
+                        dot.edge(step_id, next_step, penwidth='1.5', arrowhead='normal')
     
     return dot
 
@@ -148,6 +185,18 @@ def main():
     # Sidebar for configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
+        
+        # Layout orientation option
+        st.markdown("### Layout Orientation")
+        layout = st.radio(
+            "Flow direction",
+            ["Horizontal (Left to Right)", "Vertical (Top to Bottom)"],
+            index=0,
+            key="layout_orientation"
+        )
+        
+        st.markdown("---")
+        
         st.markdown("### Upload Excel File")
         st.markdown("Your Excel file should contain these columns:")
         st.code("""
@@ -165,9 +214,21 @@ def main():
         """)
         
         st.markdown("### Supported Step Types")
-        for step_type, config in STEP_CONFIGS.items():
-            color = config['fillcolor']
-            st.markdown(f"• **{step_type.title()}**: {config['shape']} ({color})")
+        step_type_info = {
+            'process': ('Process', '#90EE90', 'Standard automated step'),
+            'decision': ('Decision', '#FFD700', 'Yes/No branching'),
+            'manual': ('Manual', '#BA8FD8', 'Manual task'),
+            'predefined': ('Predefined', '#4682B4', 'Subprocess'),
+            'pause': ('Pause', '#FF8C00', 'Wait/delay (dashed)'),
+            'input': ('Input', '#87CEEB', 'Data input'),
+            'output': ('Output', '#87CEEB', 'Data output'),
+            'form': ('Form', '#D3D3D3', 'Form/document (dashed)'),
+            'end': ('End', '#FF0000', 'Process end')
+        }
+        
+        for step_type, (name, color, desc) in step_type_info.items():
+            st.markdown(f"🔹 **{name}**: {desc}")
+            st.markdown(f"<div style='background-color:{color}; height:20px; border: 2px solid black; margin: 5px 0;'></div>", unsafe_allow_html=True)
     
     # File upload section
     col1, col2 = st.columns([2, 1])
@@ -254,8 +315,11 @@ def main():
             st.markdown("### 📊 Process Flow Diagram")
             
             try:
+                # Determine orientation based on layout selection
+                orientation = 'LR' if 'Horizontal' in st.session_state.get('layout_orientation', 'Horizontal') else 'TB'
+                
                 with st.spinner("Generating diagram..."):
-                    flow_diagram = build_flow_for_process(df_process, selected_process)
+                    flow_diagram = build_flow_for_process(df_process, selected_process, orientation)
                 
                 # Display the diagram
                 st.graphviz_chart(flow_diagram, use_container_width=True)
