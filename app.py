@@ -1,6 +1,6 @@
 """
-Process Flow Diagram Generator
-Automated swimlane process flow diagrams from Excel templates
+Process Flow Diagram Generator - IMPROVED VERSION
+Automated swimlane process flow diagrams with proper sequential ordering
 """
 
 import streamlit as st
@@ -50,10 +50,11 @@ def get_step_attributes(step_type: str) -> Dict[str, str]:
     return STEP_CONFIGS.get(step_type_lower, STEP_CONFIGS['process'])
 
 def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation: str = 'LR') -> graphviz.Digraph:
-    """Build Graphviz flowchart with swimlanes for a given process."""
+    """Build Graphviz flowchart with swimlanes and proper sequential ordering."""
+    
     # Create main graph with specified layout
     dot = graphviz.Digraph(comment=process_name)
-    dot.attr(rankdir=orientation, splines='polyline', nodesep='1.0', ranksep='1.5')
+    dot.attr(rankdir=orientation, splines='ortho', nodesep='0.8', ranksep='1.2')
     dot.attr('node', fontname='Arial', fontsize='11', margin='0.3')
     dot.attr('edge', fontname='Arial', fontsize='10', color='black', penwidth='1.5')
     
@@ -63,7 +64,7 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
     # Sort by StepOrder
     df_sorted = df_proc.sort_values('StepOrder').reset_index(drop=True)
     
-    # Group steps by lane
+    # Group steps by lane for swimlanes
     lanes = df_sorted['Lane'].unique()
     lane_steps = {lane: df_sorted[df_sorted['Lane'] == lane] for lane in lanes}
     
@@ -94,7 +95,36 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
                 # Add the node
                 cluster.node(step_id, step_label, **attrs)
     
-    # Add edges (connections between steps)
+    # *** KEY FIX: Create rank groups to enforce step order ***
+    # Group steps by StepOrder to ensure they appear at the same level
+    step_orders = df_sorted['StepOrder'].unique()
+    
+    for order in sorted(step_orders):
+        steps_at_order = df_sorted[df_sorted['StepOrder'] == order]['StepID'].tolist()
+        
+        if len(steps_at_order) > 1:
+            # Multiple steps at same order - force same rank
+            with dot.subgraph() as s:
+                s.attr(rank='same')
+                for step_id in steps_at_order:
+                    s.node(str(step_id))
+        elif len(steps_at_order) == 1:
+            # Single step - still create rank group for consistency
+            with dot.subgraph() as s:
+                s.attr(rank='same')
+                s.node(str(steps_at_order[0]))
+    
+    # Add invisible edges between consecutive steps to enforce order
+    # This helps Graphviz understand the intended flow direction
+    prev_step = None
+    for _, row in df_sorted.iterrows():
+        current_step = str(row['StepID'])
+        if prev_step is not None:
+            # Add invisible edge with weight to guide layout
+            dot.edge(prev_step, current_step, style='invis', weight='10')
+        prev_step = current_step
+    
+    # Add visible edges (connections between steps)
     for _, row in df_sorted.iterrows():
         step_id = str(row['StepID'])
         step_type = str(row['StepType']).lower().strip()
@@ -112,10 +142,10 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
                     target_lane = str(target_row.iloc[0]['Lane'])
                     if target_lane != current_lane:
                         dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green', 
-                                style='dashed', penwidth='1.5', arrowhead='normal')
+                                style='dashed', penwidth='1.5', arrowhead='normal', constraint='false')
                     else:
                         dot.edge(step_id, yes_next, label='Yes', color='green', fontcolor='green',
-                                penwidth='1.5', arrowhead='normal')
+                                penwidth='1.5', arrowhead='normal', constraint='false')
             
             if pd.notna(row['NoNext']) and no_next != 'nan' and no_next != '':
                 # Check if cross-lane connection
@@ -124,10 +154,10 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
                     target_lane = str(target_row.iloc[0]['Lane'])
                     if target_lane != current_lane:
                         dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
-                                style='dashed', penwidth='1.5', arrowhead='normal')
+                                style='dashed', penwidth='1.5', arrowhead='normal', constraint='false')
                     else:
                         dot.edge(step_id, no_next, label='No', color='red', fontcolor='red',
-                                penwidth='1.5', arrowhead='normal')
+                                penwidth='1.5', arrowhead='normal', constraint='false')
         else:
             # Normal flow using NextStep
             next_step = str(row['NextStep'])
@@ -137,9 +167,11 @@ def build_flow_for_process(df_proc: pd.DataFrame, process_name: str, orientation
                 if not target_row.empty:
                     target_lane = str(target_row.iloc[0]['Lane'])
                     if target_lane != current_lane:
-                        dot.edge(step_id, next_step, style='dashed', penwidth='1.5', arrowhead='normal')
+                        dot.edge(step_id, next_step, style='dashed', penwidth='1.5', 
+                                arrowhead='normal', constraint='false')
                     else:
-                        dot.edge(step_id, next_step, penwidth='1.5', arrowhead='normal')
+                        dot.edge(step_id, next_step, penwidth='1.5', arrowhead='normal', 
+                                constraint='false')
     
     return dot
 
@@ -179,7 +211,7 @@ def main():
     
     # Title and description
     st.title("📊 Process Flow Diagram Generator")
-    st.markdown("### Automated Swimlane Process Flow Diagrams from Excel")
+    st.markdown("### Automated Swimlane Process Flow Diagrams with Sequential Ordering")
     st.markdown("---")
     
     # Sidebar for configuration
@@ -343,6 +375,7 @@ def main():
             
             # Display dataframe with formatting
             display_df = df_process[['StepOrder', 'Lane', 'StepID', 'StepLabel', 'StepType', 'NextStep', 'YesNext', 'NoNext']].copy()
+            display_df = display_df.sort_values('StepOrder')
             st.dataframe(
                 display_df,
                 use_container_width=True,
@@ -370,14 +403,15 @@ def main():
         1. **Prepare your Excel file** with the required columns (any sheet name works)
         2. **Upload the file** using the file uploader above
         3. **Select a process** from the dropdown menu
-        4. **View the generated swimlane diagram** and process details
+        4. **View the generated swimlane diagram** with proper sequential ordering
         5. **Download** the diagram source or process details as needed
         
         #### Features:
         - ✅ Automatic swimlane generation based on Lane column
+        - ✅ **Sequential ordering based on StepOrder column**
         - ✅ Support for 9 different step types with custom shapes and colors
         - ✅ Decision branching with Yes/No paths
-        - ✅ Horizontal left-to-right flow layout
+        - ✅ Horizontal or vertical flow layout
         - ✅ Professional business process diagram styling
         - ✅ Export capabilities for further customization
         - ✅ Works with any sheet name (automatically uses first sheet)
