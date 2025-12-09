@@ -325,51 +325,73 @@ def main():
                 with st.spinner("Generating diagram..."):
                     flow_diagram = build_flow_for_process(df_process, selected_process, orientation)
                 
-                # Render diagram to multiple formats
-                diagram_name = selected_process.replace(' ', '_')
+                # Display the diagram using Streamlit's built-in renderer (has zoom built-in)
+                st.graphviz_chart(flow_diagram, use_container_width=True)
                 
-                # Render to PNG for display and download
-                png_data = flow_diagram.pipe(format='png')
-                
-                # Render to SVG for scalable download
-                svg_data = flow_diagram.pipe(format='svg')
-                
-                # Display the diagram with zoom capability
-                st.image(png_data, use_column_width=True, caption="Click image to zoom")
-                
-                st.info("💡 **Tip**: Click the image above to zoom in/out and view details")
+                st.info("💡 **Tip**: Right-click the diagram and select 'Save image as...' to download, or use the buttons below")
                 
                 # Download buttons
-                col1, col2, col3 = st.columns(3)
+                diagram_name = selected_process.replace(' ', '_')
+                
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.download_button(
-                        label="📥 Download PNG Image",
-                        data=png_data,
-                        file_name=f"{diagram_name}_flow.png",
-                        mime="image/png",
-                        use_container_width=True
-                    )
-                
-                with col2:
-                    st.download_button(
-                        label="📥 Download SVG (Scalable)",
-                        data=svg_data,
-                        file_name=f"{diagram_name}_flow.svg",
-                        mime="image/svg+xml",
-                        use_container_width=True
-                    )
-                
-                with col3:
-                    # Download button for DOT source
+                    # Download DOT source (always works)
                     dot_source = flow_diagram.source
                     st.download_button(
                         label="📥 Download DOT Source",
                         data=dot_source,
                         file_name=f"{diagram_name}_flow.dot",
                         mime="text/plain",
-                        use_container_width=True
+                        use_container_width=True,
+                        help="Download source code to render with Graphviz or online tools"
                     )
+                
+                with col2:
+                    # Try to render PNG if Graphviz is available
+                    try:
+                        png_data = flow_diagram.pipe(format='png')
+                        st.download_button(
+                            label="📥 Download PNG Image",
+                            data=png_data,
+                            file_name=f"{diagram_name}_flow.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.button(
+                            label="📥 PNG (Graphviz Required)",
+                            disabled=True,
+                            use_container_width=True,
+                            help="Install Graphviz to enable PNG export. Use DOT source for now."
+                        )
+                
+                # Helpful note about converting DOT to images
+                with st.expander("ℹ️ How to convert DOT to PNG/SVG"):
+                    st.markdown("""
+                    **Option 1: Online Tools (Easiest)**
+                    1. Download the DOT source above
+                    2. Visit: https://dreampuf.github.io/GraphvizOnline/
+                    3. Paste your DOT code
+                    4. Export as PNG or SVG
+                    
+                    **Option 2: Install Graphviz (Advanced)**
+                    ```bash
+                    # Ubuntu/Debian
+                    sudo apt-get install graphviz
+                    
+                    # macOS
+                    brew install graphviz
+                    
+                    # Windows
+                    # Download from: https://graphviz.org/download/
+                    ```
+                    
+                    **Option 3: Right-click Save**
+                    - Right-click the diagram above
+                    - Select "Save image as..."
+                    - Choose your location and save!
+                    """)
                 
             except Exception as e:
                 st.error(f"❌ Error generating diagram: {str(e)}")
@@ -409,14 +431,14 @@ def main():
         1. **Prepare your Excel file** with the required columns (any sheet name works)
         2. **Upload the file** using the file uploader above
         3. **Select a process** from the dropdown menu
-        4. **View the generated diagram** with GUARANTEED sequential ordering
-        5. **Click the image to zoom** and explore details
-        6. **Download** in multiple formats (PNG, SVG, or DOT source)
+        4. **View the diagram** with GUARANTEED sequential ordering
+        5. **Right-click to save** or download DOT source for conversion
         
         #### Features:
         - ✅ **GUARANTEED sequential ordering** (Step 1 → Step 2 → ... → Final Step)
-        - ✅ **Click-to-zoom** for detailed viewing of large diagrams
-        - ✅ **Multiple download formats**: PNG image, SVG (scalable), DOT source
+        - ✅ **Interactive zoom** built into Streamlit (scroll to zoom, drag to pan)
+        - ✅ **Easy image export**: Right-click → "Save image as..."
+        - ✅ **DOT source download** for custom rendering (PNG, SVG, PDF via Graphviz or online tools)
         - ✅ Lane information shown in node labels (e.g., "[Lane Name] Step Description")
         - ✅ Support for 9 different step types with custom shapes and colors
         - ✅ Decision branching with Yes/No paths
